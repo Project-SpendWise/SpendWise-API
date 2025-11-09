@@ -1,0 +1,88 @@
+site_name: SpendWise API Documentation
+site_description: Complete API documentation for the SpendWise personal finance tracking application
+site_author: SpendWise Team
+site_url: https://spendwise-api.example.com
+
+repo_name: SpendWise-API
+repo_url: https://github.com/yourusername/SpendWise-API
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.annotate
+    - content.code.copy
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - admonition
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Configuration: getting-started/configuration.md
+    - Running the Server: getting-started/running.md
+  - API Reference:
+    - Overview: api/overview.md
+    - Authentication: api/authentication.md
+    - Endpoints:
+      - Auth Endpoints: api/endpoints/auth.md
+      - File Endpoints: api/endpoints/files.md
+  - Models:
+    - User Model: models/user.md
+    - File Model: models/file.md
+  - Development:
+    - Project Structure: development/structure.md
+    - Database Patterns: development/database-patterns.md
+    - Contributing: development/contributing.md
+  - Utilities:
+    - Responses: utilities/responses.md
+    - Validators: utilities/validators.md
+    - File Utils: utilities/file-utils.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: google
+            docstring_options:
+              ignore_init_summary: true
+

@@ -1,0 +1,16 @@
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
+Flask-JWT-Extended==4.6.0
+Flask-CORS==6.0.1
+Flask-Migrate==4.0.5
+bcrypt==4.1.2
+python-dotenv==1.0.0
+SQLAlchemy==2.0.44
+
+# Documentation dependencies
+mkdocs==1.5.3
+mkdocs-material==9.5.3
+mkdocstrings[python]==0.24.0
+mkdocs-autorefs==0.5.0
+pymdown-extensions==10.7
+
