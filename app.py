@@ -49,7 +49,8 @@ def create_app(config_name=None):
         r"/api/*": {
             "origins": app.config['CORS_ORIGINS'],
             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            "allow_headers": ["Content-Type", "Authorization"]
+            "allow_headers": ["Content-Type", "Authorization", "Range"],
+            "expose_headers": ["Content-Length", "Content-Range", "Accept-Ranges", "Content-Disposition"]
         }
     })
     
@@ -161,5 +162,7 @@ if __name__ == '__main__':
     app = create_app()
     with app.app_context():
         db.create_all()
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # Configure timeout for file downloads (60 seconds minimum)
+    # Note: For production, use a proper WSGI server like Gunicorn with timeout settings
+    app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
 

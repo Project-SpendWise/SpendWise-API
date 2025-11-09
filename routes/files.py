@@ -1,4 +1,4 @@
-from flask import Blueprint, request, current_app, send_file
+from flask import Blueprint, request, current_app, send_file, Response
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import select, desc, func
 from sqlalchemy.exc import IntegrityError
@@ -280,7 +280,7 @@ def get_file(file_id):
 @files_bp.route('/<file_id>/download', methods=['GET'])
 @jwt_required()
 def download_file(file_id):
-    """Download a file"""
+    """Download a file with proper headers for mobile apps"""
     try:
         db_instance = get_db()
         user_id = get_jwt_identity()
@@ -306,7 +306,7 @@ def download_file(file_id):
         full_path = file_record.get_full_path()
         
         # Check if file exists on disk
-        if not file_record.exists_on_disk():
+        if not os.path.exists(full_path) or not os.path.isfile(full_path):
             logger.error(f"File download failed: File missing on disk - {file_id} ({user_id})")
             return error_response(
                 'File not found on disk',
@@ -314,14 +314,96 @@ def download_file(file_id):
                 404
             )
         
-        logger.info(f"File download successful: {file_id} ({file_record.original_filename}, {user_id})")
-        # Send file
-        return send_file(
+        # Get actual file size from disk (more reliable than database value)
+        try:
+            actual_file_size = os.path.getsize(full_path)
+        except OSError as e:
+            logger.error(f"File download failed: Cannot get file size - {str(e)} ({file_id}, {user_id})")
+            return error_response(
+                'Cannot access file',
+                'FILE_ACCESS_ERROR',
+                500
+            )
+        
+        # Sanitize filename for Content-Disposition header
+        # Escape quotes and special characters in filename
+        safe_filename = file_record.original_filename.replace('"', '\\"')
+        
+        # Handle Range requests for partial downloads (resume capability)
+        range_header = request.headers.get('Range')
+        
+        if range_header:
+            # Parse Range header (e.g., "bytes=0-1023")
+            try:
+                range_match = range_header.replace('bytes=', '').split('-')
+                start = int(range_match[0]) if range_match[0] else 0
+                end = int(range_match[1]) if range_match[1] else actual_file_size - 1
+                
+                # Validate range
+                if start < 0 or end >= actual_file_size or start > end:
+                    logger.warning(f"Invalid range request: {range_header} ({file_id}, {user_id})")
+                    return Response(
+                        status=416,  # Range Not Satisfiable
+                        headers={
+                            'Content-Range': f'bytes */{actual_file_size}'
+                        }
+                    )
+                
+                # Read file chunk
+                chunk_size = end - start + 1
+                with open(full_path, 'rb') as f:
+                    f.seek(start)
+                    chunk_data = f.read(chunk_size)
+                
+                # Return partial content
+                response = Response(
+                    chunk_data,
+                    status=206,  # Partial Content
+                    mimetype=file_record.mime_type,
+                    headers={
+                        'Content-Type': file_record.mime_type,
+                        'Content-Length': str(chunk_size),
+                        'Content-Range': f'bytes {start}-{end}/{actual_file_size}',
+                        'Content-Disposition': f'attachment; filename="{safe_filename}"',
+                        'Accept-Ranges': 'bytes',
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache',
+                        'Expires': '0'
+                    }
+                )
+                
+                logger.info(f"File download (partial): {file_id} ({file_record.original_filename}, bytes {start}-{end}, {user_id})")
+                return response
+                
+            except (ValueError, IndexError) as e:
+                logger.warning(f"Invalid Range header format: {range_header} ({file_id}, {user_id})")
+                # Fall through to full file download
+        
+        # Full file download with all required headers for mobile apps
+        logger.info(f"File download (full): {file_id} ({file_record.original_filename}, {actual_file_size} bytes, {user_id})")
+        
+        # Use send_file with explicit headers for mobile compatibility
+        response = send_file(
             full_path,
             mimetype=file_record.mime_type,
             as_attachment=True,
-            download_name=file_record.original_filename
+            download_name=file_record.original_filename,
+            conditional=True  # Enable conditional requests (ETag, If-Modified-Since)
         )
+        
+        # Set all required headers explicitly
+        response.headers['Content-Length'] = str(actual_file_size)
+        response.headers['Content-Type'] = file_record.mime_type
+        response.headers['Content-Disposition'] = f'attachment; filename="{safe_filename}"'
+        response.headers['Accept-Ranges'] = 'bytes'
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        
+        # Set connection keep-alive
+        response.headers['Connection'] = 'keep-alive'
+        
+        return response
         
     except Exception as e:
         logger.error(
