@@ -1,0 +1,32 @@
+{
+  "bank_name": "ING Bank",
+  "currency": "TRY",
+  "transactions": [],
+  "account_number": null,
+  "statement_period_start": null,
+  "statement_period_end": null,
+  "opening_balance": null,
+  "closing_balance": null,
+  "extraction_metadata": {
+    "extracted_at": "2025-11-10T13:19:31.392460",
+    "ai_provider": "groq",
+    "ai_model": "llama-3.3-70b-versatile",
+    "transaction_count": 0,
+    "batch_processing": true,
+    "total_chunks": 6,
+    "chunk_size": 30,
+    "total_records_processed": 152
+  },
+  "source_file": {
+    "filename": "Hesap_Hareketleri_08112025.xlsx",
+    "filepath": "Hesap_Hareketleri_08112025.xlsx",
+    "file_type": "xlsx",
+    "file_size_bytes": 14545,
+    "processed_at": "2025-11-10T13:19:31.392678"
+  },
+  "bank_detection": {
+    "detected_bank": "ING Bank",
+    "confidence": 1.0,
+    "detection_method": "automatic"
+  }
+}
