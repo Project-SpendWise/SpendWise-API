@@ -22,6 +22,15 @@ class Config:
     GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")  # Faster, uses fewer tokens
     GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
     
+    # Categorization settings
+    CATEGORIZATION_MODEL = os.getenv("CATEGORIZATION_MODEL", "llama-3.3-70b-versatile")  # Better model for categorization
+    INCOME_DETECTION_MIN_AMOUNT = float(os.getenv("INCOME_DETECTION_MIN_AMOUNT", "5000"))  # Minimum amount to consider as income
+    
+    # Validation thresholds
+    VALIDATION_MAX_SPENDING_RATIO = float(os.getenv("VALIDATION_MAX_SPENDING_RATIO", "1.0"))  # 100% of income
+    VALIDATION_SUSPICIOUS_SINGLE_TXN_RATIO = float(os.getenv("VALIDATION_SUSPICIOUS_SINGLE_TXN_RATIO", "0.5"))  # 50% of income
+    VALIDATION_SUSPICIOUS_CATEGORY_RATIO = float(os.getenv("VALIDATION_SUSPICIOUS_CATEGORY_RATIO", "0.3"))  # 30% of income
+    
     # Extraction settings
     MAX_TOKENS = int(os.getenv("MAX_TOKENS", "8000"))  # Increased for large statements
     TEMPERATURE = float(os.getenv("TEMPERATURE", "0.1"))

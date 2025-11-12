@@ -4,7 +4,7 @@ Defines the unified transaction model for all bank statements
 """
 from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
-from typing import Optional, Literal, Dict, Any
+from typing import Optional, Literal, Dict, Any, List
 from enum import Enum
 
 
@@ -82,6 +82,22 @@ class Transaction(BaseModel):
     raw_data: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Original raw data from extraction"
+    )
+    category: Optional[str] = Field(
+        default=None,
+        description="Transaction category (e.g., Food & Dining, Shopping, Bills & Utilities)"
+    )
+    subcategory: Optional[str] = Field(
+        default=None,
+        description="Transaction subcategory (e.g., Groceries, Restaurants, Electricity)"
+    )
+    category_confidence: Optional[float] = Field(
+        default=None,
+        description="Confidence score for the category assignment (0.0 to 1.0)"
+    )
+    tags: Optional[List[str]] = Field(
+        default=None,
+        description="Additional tags for the transaction"
     )
     
     @field_validator('amount')

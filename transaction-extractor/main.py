@@ -14,7 +14,13 @@ from typing import Optional
 from config import Config
 from extractors import PDFExtractor, ExcelExtractor, CSVExtractor
 from detectors import BankDetector
-from ai import AIExtractionEngine
+from ai import (
+    AIExtractionEngine,
+    TransactionCategoryEngine,
+    IncomeDetector,
+    PeriodAnalyzer,
+    CategorizationValidator
+)
 from models import BankStatement, Transaction
 
 # Configure logging
@@ -48,9 +54,37 @@ class TransactionExtractor:
             base_url=ai_config['base_url']
         )
         
-        logger.info(f"Initialized TransactionExtractor with Groq model: {ai_config['model']}")
+        # Initialize categorization engine with better model
+        self.category_engine = TransactionCategoryEngine(
+            api_key=ai_config['api_key'],
+            model=Config.CATEGORIZATION_MODEL,
+            base_url=ai_config['base_url']
+        )
+        
+        # Initialize income detector
+        self.income_detector = IncomeDetector(
+            min_amount=Config.INCOME_DETECTION_MIN_AMOUNT,
+            api_key=ai_config['api_key'],
+            model=Config.CATEGORIZATION_MODEL,
+            base_url=ai_config['base_url']
+        )
+        
+        # Initialize period analyzer
+        self.period_analyzer = PeriodAnalyzer()
+        
+        # Initialize validator
+        self.validator = CategorizationValidator(
+            max_spending_ratio=Config.VALIDATION_MAX_SPENDING_RATIO,
+            suspicious_single_txn_ratio=Config.VALIDATION_SUSPICIOUS_SINGLE_TXN_RATIO,
+            suspicious_category_ratio=Config.VALIDATION_SUSPICIOUS_CATEGORY_RATIO,
+            api_key=ai_config['api_key'],
+            model=Config.CATEGORIZATION_MODEL,
+            base_url=ai_config['base_url']
+        )
+        
+        logger.info(f"Initialized TransactionExtractor with extraction model: {ai_config['model']}, categorization model: {Config.CATEGORIZATION_MODEL}")
     
-    def extract_from_file(self, file_path: str | Path, auto_batch: bool = True, batch_size: int = 30, batch_delay: float = None) -> dict:
+    def extract_from_file(self, file_path: str | Path, auto_batch: bool = True, batch_size: int = 30, batch_delay: float = None, categorize: bool = True) -> dict:
         """
         Extract transactions from a file with automatic batch processing for large files
         
@@ -59,6 +93,7 @@ class TransactionExtractor:
             auto_batch: Automatically use batch processing for large files
             batch_size: Number of transactions per batch
             batch_delay: Seconds to wait between batches (None = use config default)
+            categorize: Whether to categorize transactions using AI (default: True)
             
         Returns:
             Extracted transaction data
@@ -137,13 +172,128 @@ class TransactionExtractor:
         logger.info("Step 4: Validating and fixing dates...")
         extracted_data = self.ai_engine.validate_and_fix_dates(extracted_data)
         
+        # Step 5: Income-aware categorization pipeline
+        if categorize:
+            transactions = extracted_data.get('transactions', [])
+            if transactions:
+                # Step 5a: Detect income transactions
+                logger.info("Step 5a: Detecting income transactions...")
+                income_transactions = self.income_detector.detect_income(transactions)
+                extracted_data['income_transactions'] = income_transactions
+                logger.info(f"Detected {len(income_transactions)} income transactions")
+                
+                # Step 5b: Group transactions into periods
+                logger.info("Step 5b: Grouping transactions into periods...")
+                periods = self.period_analyzer.group_into_periods(transactions, income_transactions)
+                extracted_data['income_periods'] = periods
+                logger.info(f"Created {len(periods)} periods")
+                
+                # Step 5c: Categorize transactions with period context
+                logger.info("Step 5c: Categorizing transactions with period context...")
+                all_categorized_transactions = []
+                
+                for period in periods:
+                    period_txns = period.get('transactions', [])
+                    if not period_txns:
+                        continue
+                    
+                    # Create period context for categorization
+                    period_context = {
+                        'period_id': period.get('period_id', 'unknown'),
+                        'income_amount': period.get('income_amount', 0.0),
+                        'total_expenses_so_far': 0.0
+                    }
+                    
+                    # Categorize transactions in this period
+                    categorized_period_txns = self.category_engine.categorize_transactions(
+                        transactions=period_txns,
+                        batch_size=50,
+                        temperature=Config.TEMPERATURE,
+                        max_tokens=Config.MAX_TOKENS,
+                        delay_between_batches=Config.BATCH_DELAY,
+                        period_context=period_context
+                    )
+                    
+                    # Update period with categorized transactions
+                    period['transactions'] = categorized_period_txns
+                    all_categorized_transactions.extend(categorized_period_txns)
+                
+                extracted_data['transactions'] = all_categorized_transactions
+                logger.info(f"Categorized {len(all_categorized_transactions)} transactions across {len(periods)} periods")
+                
+                # Step 5d: Validate categorizations
+                logger.info("Step 5d: Validating categorizations...")
+                validation_results = self.validator.validate_periods(periods)
+                extracted_data['validation_warnings'] = validation_results.get('warnings', [])
+                extracted_data['validation_suspicious_transactions'] = validation_results.get('suspicious_transactions', [])
+                logger.info(f"Validation found {len(validation_results.get('warnings', []))} warnings and {len(validation_results.get('suspicious_transactions', []))} suspicious transactions")
+                
+                # Step 5e: Re-categorize suspicious transactions
+                if validation_results.get('suspicious_transactions'):
+                    logger.info("Step 5e: Re-categorizing suspicious transactions...")
+                    suspicious_txns = validation_results.get('suspicious_transactions', [])
+                    
+                    # Group suspicious transactions by period
+                    suspicious_by_period = {}
+                    for txn_info in suspicious_txns:
+                        period_id = txn_info.get('period_id')
+                        if period_id not in suspicious_by_period:
+                            suspicious_by_period[period_id] = []
+                        # Find the actual transaction
+                        txn_id = txn_info.get('transaction_id')
+                        for period in periods:
+                            if period.get('period_id') == period_id:
+                                for txn in period.get('transactions', []):
+                                    if txn.get('transaction_id') == txn_id:
+                                        suspicious_by_period[period_id].append(txn)
+                                        break
+                    
+                    # Re-categorize by period
+                    for period_id, suspicious_list in suspicious_by_period.items():
+                        period = next((p for p in periods if p.get('period_id') == period_id), None)
+                        if period:
+                            re_categorized = self.validator.re_categorize_suspicious(
+                                suspicious_list,
+                                period
+                            )
+                            
+                            # Update transactions in period
+                            for recat_txn in re_categorized:
+                                txn_id = recat_txn.get('transaction_id')
+                                for i, txn in enumerate(period.get('transactions', [])):
+                                    if txn.get('transaction_id') == txn_id:
+                                        period['transactions'][i] = recat_txn
+                                        # Also update in all_categorized_transactions
+                                        for j, all_txn in enumerate(all_categorized_transactions):
+                                            if all_txn.get('transaction_id') == txn_id:
+                                                all_categorized_transactions[j] = recat_txn
+                                                break
+                                        break
+                    
+                    logger.info(f"Re-categorized {len(suspicious_txns)} suspicious transactions")
+                
+                # Update periods in extracted_data
+                extracted_data['income_periods'] = periods
+                extracted_data['transactions'] = all_categorized_transactions
+                
+                # Add categorization summary for analysis
+                extracted_data['categorization_summary'] = self._generate_categorization_summary(all_categorized_transactions)
+                
+                # Add period-based summary
+                extracted_data['period_summary'] = self._generate_period_summary(periods)
+                
+            else:
+                logger.warning("No transactions to categorize")
+        else:
+            logger.info("Step 5: Skipping categorization (--no-categorize flag set)")
+        
         # Add file metadata
         extracted_data['source_file'] = {
             'filename': file_path.name,
             'filepath': str(file_path),
             'file_type': suffix[1:],
             'file_size_bytes': file_path.stat().st_size,
-            'processed_at': datetime.utcnow().isoformat()
+            'processed_at': datetime.now(datetime.UTC).isoformat()
         }
         
         # Add bank detection info
@@ -156,6 +306,98 @@ class TransactionExtractor:
         logger.info(f"Extraction complete: {len(extracted_data.get('transactions', []))} transactions extracted")
         
         return extracted_data
+    
+    def _generate_categorization_summary(self, transactions: list) -> dict:
+        """
+        Generate a summary of categorized transactions for analysis
+        
+        Args:
+            transactions: List of categorized transactions
+            
+        Returns:
+            Summary dictionary with category statistics
+        """
+        from collections import defaultdict
+        
+        summary = {
+            'total_transactions': len(transactions),
+            'categories': defaultdict(lambda: {'count': 0, 'total_amount': 0.0, 'subcategories': defaultdict(lambda: {'count': 0, 'total_amount': 0.0})}),
+            'by_type': {
+                'debit': {'count': 0, 'total_amount': 0.0},
+                'credit': {'count': 0, 'total_amount': 0.0}
+            }
+        }
+        
+        for txn in transactions:
+            category = txn.get('category', 'Other')
+            subcategory = txn.get('subcategory', 'Uncategorized')
+            amount = abs(float(txn.get('amount', 0)))
+            txn_type = txn.get('transaction_type', 'debit')
+            
+            # Update category stats
+            summary['categories'][category]['count'] += 1
+            summary['categories'][category]['total_amount'] += amount
+            summary['categories'][category]['subcategories'][subcategory]['count'] += 1
+            summary['categories'][category]['subcategories'][subcategory]['total_amount'] += amount
+            
+            # Update type stats
+            summary['by_type'][txn_type]['count'] += 1
+            summary['by_type'][txn_type]['total_amount'] += amount
+        
+        # Convert defaultdicts to regular dicts for JSON serialization
+        summary['categories'] = {
+            cat: {
+                'count': stats['count'],
+                'total_amount': round(stats['total_amount'], 2),
+                'subcategories': {
+                    subcat: {
+                        'count': sub_stats['count'],
+                        'total_amount': round(sub_stats['total_amount'], 2)
+                    }
+                    for subcat, sub_stats in stats['subcategories'].items()
+                }
+            }
+            for cat, stats in summary['categories'].items()
+        }
+        
+        # Round type totals
+        summary['by_type']['debit']['total_amount'] = round(summary['by_type']['debit']['total_amount'], 2)
+        summary['by_type']['credit']['total_amount'] = round(summary['by_type']['credit']['total_amount'], 2)
+        
+        return summary
+    
+    def _generate_period_summary(self, periods: list) -> dict:
+        """
+        Generate a summary of periods for analysis
+        
+        Args:
+            periods: List of period dictionaries
+            
+        Returns:
+            Summary dictionary with period statistics
+        """
+        summary = {
+            'total_periods': len(periods),
+            'total_income': sum(p.get('income_amount', 0.0) for p in periods),
+            'total_expenses': sum(p.get('total_expenses', 0.0) for p in periods),
+            'periods': []
+        }
+        
+        for period in periods:
+            period_summary = {
+                'period_id': period.get('period_id', 'unknown'),
+                'start_date': str(period.get('start_date', '')) if period.get('start_date') else None,
+                'end_date': str(period.get('end_date', '')) if period.get('end_date') else None,
+                 'income_amount': round(period.get('income_amount', 0.0), 2),
+                 'starting_balance': round(period.get('starting_balance', 0.0), 2) if period.get('starting_balance') is not None else None,
+                 'total_expenses': round(period.get('total_expenses', 0.0), 2),
+                 'ending_balance': round(period.get('ending_balance', 0.0), 2) if period.get('ending_balance') is not None else None,
+                 'remaining_from_income': round(period.get('remaining_from_income', 0.0), 2),
+                 'transaction_count': len(period.get('transactions', []))
+            }
+            summary['periods'].append(period_summary)
+        
+        return summary
     
     def save_to_json(self, data: dict, output_path: str | Path):
         """
@@ -261,6 +503,12 @@ Examples:
         help='Enable debug logging'
     )
     
+    parser.add_argument(
+        '--no-categorize',
+        action='store_true',
+        help='Skip transaction categorization step'
+    )
+    
     args = parser.parse_args()
     
     # Set debug level
@@ -291,11 +539,13 @@ Examples:
         
         # Extract with batch settings
         use_batch = not args.no_batch
+        should_categorize = not args.no_categorize
         extracted_data = extractor.extract_from_file(
             file_path=args.file,
             auto_batch=use_batch,
             batch_size=args.batch_size,
-            batch_delay=args.batch_delay
+            batch_delay=args.batch_delay,
+            categorize=should_categorize
         )
         
         # Determine output path
@@ -326,6 +576,61 @@ Examples:
         
         if extracted_data.get('statement_period_start') and extracted_data.get('statement_period_end'):
             print(f"  Period:       {extracted_data['statement_period_start']} to {extracted_data['statement_period_end']}")
+        
+        # Show period summary if available
+        if 'period_summary' in extracted_data:
+            period_summary = extracted_data['period_summary']
+            print(f"\n  Income Periods:")
+            print(f"    Total Periods: {period_summary.get('total_periods', 0)}")
+            print(f"    Total Income:  {period_summary.get('total_income', 0):,.2f} {extracted_data.get('currency', 'TRY')}")
+            print(f"    Total Expenses: {period_summary.get('total_expenses', 0):,.2f} {extracted_data.get('currency', 'TRY')}")
+            
+            # Show period details
+            periods = period_summary.get('periods', [])
+            if periods:
+                print(f"\n  Period Details:")
+                for period in periods[:5]:  # Show first 5 periods
+                    period_id = period.get('period_id', 'unknown')
+                    income = period.get('income_amount', 0) or 0
+                    start_balance = period.get('starting_balance')
+                    expenses = period.get('total_expenses', 0) or 0
+                    end_balance = period.get('ending_balance')
+                    remaining = period.get('remaining_from_income', 0) or 0
+                    print(f"    {period_id}:")
+                    if start_balance is not None:
+                        print(f"      Income: {income:,.2f} → Starting Balance: {start_balance:,.2f}")
+                    else:
+                        print(f"      Income: {income:,.2f}")
+                    if end_balance is not None:
+                        print(f"      Expenses: {expenses:,.2f} → Ending Balance: {end_balance:,.2f} (Remaining: {remaining:,.2f})")
+                    else:
+                        print(f"      Expenses: {expenses:,.2f} (Remaining: {remaining:,.2f})")
+                    print(f"      Transactions: {period.get('transaction_count', 0)}")
+        
+        # Show categorization summary if available
+        if 'categorization_summary' in extracted_data:
+            cat_summary = extracted_data['categorization_summary']
+            print(f"\n  Categorization:")
+            print(f"    Categories: {len(cat_summary.get('categories', {}))}")
+            print(f"    Total Debits:  {cat_summary.get('by_type', {}).get('debit', {}).get('total_amount', 0):,.2f} {extracted_data.get('currency', 'TRY')}")
+            print(f"    Total Credits: {cat_summary.get('by_type', {}).get('credit', {}).get('total_amount', 0):,.2f} {extracted_data.get('currency', 'TRY')}")
+            
+            # Show top categories
+            categories = cat_summary.get('categories', {})
+            if categories:
+                sorted_cats = sorted(categories.items(), key=lambda x: x[1]['total_amount'], reverse=True)
+                print(f"\n  Top Categories by Amount:")
+                for i, (cat, stats) in enumerate(sorted_cats[:5], 1):
+                    print(f"    {i}. {cat}: {stats['total_amount']:,.2f} {extracted_data.get('currency', 'TRY')} ({stats['count']} transactions)")
+        
+        # Show validation warnings if any
+        if 'validation_warnings' in extracted_data and extracted_data['validation_warnings']:
+            warnings = extracted_data['validation_warnings']
+            print(f"\n  Validation Warnings: {len(warnings)}")
+            for warning in warnings[:3]:  # Show first 3 warnings
+                w_type = warning.get('type', 'unknown')
+                period_id = warning.get('period_id', 'unknown')
+                print(f"    - {w_type} in {period_id}")
         
         print("\n")
         
