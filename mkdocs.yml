@@ -62,9 +62,16 @@ nav:
     - Endpoints:
       - Auth Endpoints: api/endpoints/auth.md
       - File Endpoints: api/endpoints/files.md
+      - Statement Endpoints: api/endpoints/statements.md
+      - Transaction Endpoints: api/endpoints/transactions.md
+      - Budget Endpoints: api/endpoints/budgets.md
+      - Analytics Endpoints: api/endpoints/analytics.md
   - Models:
     - User Model: models/user.md
     - File Model: models/file.md
+    - Statement Model: models/statement.md
+    - Transaction Model: models/transaction.md
+    - Budget Model: models/budget.md
   - Development:
     - Project Structure: development/structure.md
     - Database Patterns: development/database-patterns.md

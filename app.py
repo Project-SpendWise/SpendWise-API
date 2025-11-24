@@ -54,13 +54,24 @@ def create_app(config_name=None):
         }
     })
     
+    # Import all models to ensure they're registered with SQLAlchemy
+    from models import User, File, Statement, Transaction, Budget
+    
     # Register blueprints (models will be imported by routes)
     from routes.auth import auth_bp
     from routes.files import files_bp
+    from routes.statements import statements_bp
+    from routes.transactions import transactions_bp
+    from routes.budgets import budgets_bp
+    from routes.analytics import analytics_bp
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(files_bp, url_prefix='/api/files')
+    app.register_blueprint(statements_bp, url_prefix='/api/statements')
+    app.register_blueprint(transactions_bp, url_prefix='/api/transactions')
+    app.register_blueprint(budgets_bp, url_prefix='/api/budgets')
+    app.register_blueprint(analytics_bp, url_prefix='/api/analytics')
     
-    # Ensure models are registered with db
+    # Ensure models are registered with db and create tables
     with app.app_context():
         db.create_all()
     
