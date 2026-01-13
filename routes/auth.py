@@ -58,8 +58,19 @@ def register():
                 logger.warning(f"Registration failed: Invalid username - {error_msg}")
                 return error_response(error_msg, 'INVALID_USERNAME', 400)
         
+        # Support both 'name' field (frontend) and 'first_name'/'last_name' (backend)
+        name = sanitize_string(data.get('name'), max_length=200)
         first_name = sanitize_string(data.get('first_name'), max_length=100)
         last_name = sanitize_string(data.get('last_name'), max_length=100)
+        
+        # If 'name' is provided but not first_name/last_name, split it
+        if name and not first_name and not last_name:
+            name_parts = name.split(' ', 1)
+            first_name = name_parts[0] if len(name_parts) > 0 else None
+            last_name = name_parts[1] if len(name_parts) > 1 else None
+        elif not first_name and not last_name and name:
+            # If only name provided, use it as first_name
+            first_name = name
         
         # Check if user already exists  
         existing_user = db_instance.session.scalar(select(User).filter_by(email=email.lower().strip()))
@@ -85,10 +96,16 @@ def register():
         db_instance.session.add(user)
         db_instance.session.commit()
         
+        # Create tokens for registration (frontend expects tokens on register)
+        access_token = create_access_token(identity=str(user.id))
+        refresh_token = create_refresh_token(identity=str(user.id))
+        
         logger.info(f"User registered successfully: {user.id} ({user.email})")
         return success_response(
             data={
-                'user': user.to_dict()
+                'user': user.to_dict(),
+                'access_token': access_token,
+                'refresh_token': refresh_token
             },
             message='User registered successfully',
             status_code=201
@@ -223,6 +240,14 @@ def update_user():
                 
                 user.username = username
         
+        # Support both 'name' field (frontend) and 'first_name'/'last_name' (backend)
+        if 'name' in data:
+            name = sanitize_string(data.get('name'), max_length=200)
+            if name:
+                name_parts = name.split(' ', 1)
+                user.first_name = name_parts[0] if len(name_parts) > 0 else None
+                user.last_name = name_parts[1] if len(name_parts) > 1 else None
+        
         # Update first_name if provided
         if 'first_name' in data:
             user.first_name = sanitize_string(data.get('first_name'), max_length=100)
@@ -230,6 +255,22 @@ def update_user():
         # Update last_name if provided
         if 'last_name' in data:
             user.last_name = sanitize_string(data.get('last_name'), max_length=100)
+        
+        # Update email if provided
+        if 'email' in data:
+            email = data.get('email')
+            is_valid, error_msg = validate_email(email)
+            if not is_valid:
+                logger.warning(f"Update user failed: Invalid email - {error_msg}")
+                return error_response(error_msg, 'INVALID_EMAIL', 400)
+            
+            # Check if email is already taken by another user
+            existing_user = db_instance.session.scalar(select(User).filter_by(email=email.lower().strip()))
+            if existing_user and existing_user.id != user.id:
+                logger.warning(f"Update user failed: Email already taken - {email}")
+                return error_response('Email already taken', 'EMAIL_EXISTS', 409)
+            
+            user.email = email.lower().strip()
         
         user.updated_at = datetime.utcnow()
         db_instance.session.commit()
@@ -272,8 +313,9 @@ def change_password():
             logger.warning(f"Change password failed: No request body - {user_id}")
             return error_response('Request body is required', 'INVALID_REQUEST', 400)
         
-        current_password = data.get('current_password')
-        new_password = data.get('new_password')
+        # Support both snake_case (backend) and camelCase (frontend)
+        current_password = data.get('currentPassword') or data.get('current_password')
+        new_password = data.get('newPassword') or data.get('new_password')
         
         if not current_password or not new_password:
             logger.warning(f"Change password failed: Missing passwords - {user_id}")
@@ -312,12 +354,45 @@ def change_password():
         return error_response('An error occurred during password change', 'PASSWORD_CHANGE_ERROR', 500)
 
 @auth_bp.route('/refresh', methods=['POST'])
-@jwt_required(refresh=True)
 def refresh():
-    """Refresh access token"""
+    """
+    Refresh access token.
+    Supports both Authorization header (Bearer token) and request body (refresh_token field).
+    Frontend spec requires refresh_token in request body.
+    """
     try:
         db_instance = get_db()
-        user_id = get_jwt_identity()
+        
+        # Try to get token from request body first (frontend spec)
+        data = request.get_json() or {}
+        refresh_token_from_body = data.get('refresh_token')
+        
+        # If not in body, try Authorization header (backward compatibility)
+        auth_header = request.headers.get('Authorization', '')
+        refresh_token_from_header = None
+        if auth_header.startswith('Bearer '):
+            refresh_token_from_header = auth_header[7:]
+        
+        # Use token from body if available, otherwise from header
+        refresh_token_value = refresh_token_from_body or refresh_token_from_header
+        
+        if not refresh_token_value:
+            logger.warning("Token refresh failed: No refresh token provided")
+            return error_response('Refresh token is required', 'MISSING_TOKEN', 401)
+        
+        # Verify token and get user_id
+        from flask_jwt_extended import decode_token
+        try:
+            decoded = decode_token(refresh_token_value)
+            user_id = decoded.get('sub')
+            
+            if not user_id:
+                logger.warning("Token refresh failed: Invalid token format")
+                return error_response('Invalid refresh token', 'INVALID_TOKEN', 401)
+        except Exception as e:
+            logger.warning(f"Token refresh failed: Token decode error - {str(e)}")
+            return error_response('Invalid or expired refresh token', 'INVALID_TOKEN', 401)
+        
         logger.debug(f"Token refresh request: {user_id}")
         
         user = db_instance.session.scalar(select(User).filter_by(id=user_id))

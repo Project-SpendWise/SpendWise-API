@@ -2,6 +2,10 @@
 
 The official API and data management layer for the SpendWise personal finance tracking application. This service handles user authentication, secure data storage for all income and expense records, and provides the necessary analytical endpoints for the mobile app's budgeting and reporting features.
 
+## 🚀 Quick Start
+
+**New to the project?** See **[SETUP_FROM_SCRATCH.md](SETUP_FROM_SCRATCH.md)** for a complete step-by-step setup guide.
+
 ## Technology Stack
 
 - **Framework**: Flask 3.0.0

@@ -128,10 +128,8 @@ def get_category_breakdown():
                 })
         
         logger.debug(f"Get category breakdown successful: {len(categories)} categories ({user_id})")
-        return success_response(data={
-            'categories': categories,
-            'totalExpenses': total_expenses
-        })
+        # Frontend spec expects array directly, not wrapped in object
+        return success_response(data=categories)
         
     except ValueError as e:
         return error_response(str(e), 'INVALID_DATE', 400)
@@ -180,52 +178,99 @@ def get_spending_trends():
         else:
             return error_response('period must be "day", "week", or "month"', 'INVALID_PERIOD', 400)
         
-        query = select(
+        # Get income and expenses separately for each period
+        # Build income query
+        income_query = select(
             date_expr.label('period_date'),
-            func.sum(Transaction.amount).label('total_amount'),
-            func.count(Transaction.id).label('count')
+            func.sum(Transaction.amount).label('income')
+        ).filter_by(
+            user_id=user_id,
+            type='income'
+        )
+        
+        # Build expense query
+        expense_query = select(
+            date_expr.label('period_date'),
+            func.sum(Transaction.amount).label('expenses')
         ).filter_by(
             user_id=user_id,
             type='expense'
         )
         
         if statement_id:
-            query = query.filter_by(statement_id=statement_id)
+            income_query = income_query.filter_by(statement_id=statement_id)
+            expense_query = expense_query.filter_by(statement_id=statement_id)
         
         if start_date:
-            query = query.filter(Transaction.date >= start_date)
+            income_query = income_query.filter(Transaction.date >= start_date)
+            expense_query = expense_query.filter(Transaction.date >= start_date)
         if end_date:
-            query = query.filter(Transaction.date <= end_date)
+            income_query = income_query.filter(Transaction.date <= end_date)
+            expense_query = expense_query.filter(Transaction.date <= end_date)
         
-        query = query.group_by(date_expr)
-        query = query.order_by(date_expr)
+        income_query = income_query.group_by(date_expr).order_by(date_expr)
+        expense_query = expense_query.group_by(date_expr).order_by(date_expr)
         
-        results = db_instance.session.execute(query).all()
+        income_results = db_instance.session.execute(income_query).all()
+        expense_results = db_instance.session.execute(expense_query).all()
         
+        # Combine results by period_date
+        trends_dict = {}
+        
+        # Add income data
+        for row in income_results:
+            period_key = str(row.period_date)
+            if period_key not in trends_dict:
+                trends_dict[period_key] = {
+                    'period_date': row.period_date,
+                    'income': 0.0,
+                    'expenses': 0.0
+                }
+            trends_dict[period_key]['income'] = float(row.income or 0)
+        
+        # Add expense data
+        for row in expense_results:
+            period_key = str(row.period_date)
+            if period_key not in trends_dict:
+                trends_dict[period_key] = {
+                    'period_date': row.period_date,
+                    'income': 0.0,
+                    'expenses': 0.0
+                }
+            trends_dict[period_key]['expenses'] = float(row.expenses or 0)
+        
+        # Convert to list format matching spec
         trends = []
-        for row in results:
+        for period_key in sorted(trends_dict.keys()):
+            row = trends_dict[period_key]
+            
             # Convert period_date to ISO format
             if period == 'day':
-                period_date = datetime.strptime(str(row.period_date), '%Y-%m-%d').isoformat() + 'Z'
+                period_date = datetime.strptime(str(row['period_date']), '%Y-%m-%d').isoformat() + 'Z'
             elif period == 'week':
                 # Parse week format
-                year, week = str(row.period_date).split('-W')
+                year, week = str(row['period_date']).split('-W')
                 # Approximate to first day of week
-                period_date = datetime.strptime(f'{year}-W{week}-1', '%Y-W%W-%w').isoformat() + 'Z'
+                try:
+                    period_date = datetime.strptime(f'{year}-W{week}-1', '%Y-W%W-%w').isoformat() + 'Z'
+                except:
+                    period_date = datetime.strptime(f'{year}-01-01', '%Y-%m-%d').isoformat() + 'Z'
             else:  # month
-                period_date = datetime.strptime(str(row.period_date), '%Y-%m').isoformat() + 'Z'
+                period_date = datetime.strptime(str(row['period_date']), '%Y-%m').isoformat() + 'Z'
+            
+            income = row['income']
+            expenses = row['expenses']
+            savings = income - expenses
             
             trends.append({
                 'date': period_date,
-                'totalAmount': float(row.total_amount),
-                'transactionCount': row.count
+                'income': income,
+                'expenses': expenses,
+                'savings': savings
             })
         
         logger.debug(f"Get spending trends successful: {len(trends)} periods ({user_id})")
-        return success_response(data={
-            'trends': trends,
-            'period': period
-        })
+        return success_response(data=trends)
         
     except ValueError as e:
         return error_response(str(e), 'INVALID_DATE', 400)
@@ -280,37 +325,10 @@ def get_financial_insights():
         total_income = float(db_instance.session.scalar(income_query) or 0)
         total_expenses = float(db_instance.session.scalar(expense_query) or 0)
         
-        insights = []
+        # Calculate savings rate
+        savings_rate = ((total_income - total_expenses) / total_income * 100) if total_income > 0 else 0.0
         
-        # Low savings rate insight
-        if total_income > 0:
-            savings_rate = ((total_income - total_expenses) / total_income) * 100
-            if savings_rate < 20:
-                severity = 'error' if savings_rate < 0 else 'warning'
-                insights.append({
-                    'type': 'low_savings_rate',
-                    'title': 'Low Savings Rate',
-                    'message': f'You are saving {savings_rate:.1f}% of your income. You should aim for at least 20%.',
-                    'severity': severity
-                })
-            elif savings_rate >= 20:
-                insights.append({
-                    'type': 'great_savings',
-                    'title': 'Great Savings Rate',
-                    'message': f'You are saving {savings_rate:.1f}% of your income. Keep up the good work!',
-                    'severity': 'success'
-                })
-        
-        # Excessive spending insight
-        if total_expenses > total_income:
-            insights.append({
-                'type': 'excessive_spending',
-                'title': 'Excessive Spending',
-                'message': 'Your expenses exceed your income. Consider reviewing your spending habits.',
-                'severity': 'error'
-            })
-        
-        # Highest spending category
+        # Get top spending category
         category_query = select(
             Transaction.category,
             func.sum(Transaction.amount).label('total')
@@ -327,18 +345,52 @@ def get_financial_insights():
             category_query = category_query.filter(Transaction.date <= end_date)
         
         category_query = category_query.group_by(Transaction.category).order_by(func.sum(Transaction.amount).desc())
-        top_category = db_instance.session.execute(category_query).first()
+        top_category_result = db_instance.session.execute(category_query).first()
+        top_spending_category = top_category_result.category if top_category_result and top_category_result.category else None
         
-        if top_category and top_category.category:
-            insights.append({
-                'type': 'highest_spending_category',
-                'title': 'Highest Spending Category',
-                'message': f'You spend the most in {top_category.category} category. You can review your expenses in this category.',
-                'severity': 'info'
-            })
+        # Calculate average daily spending
+        days_in_period = 1
+        if start_date and end_date:
+            days_in_period = max(1, (end_date - start_date).days + 1)
+        elif statement:
+            if statement.statement_period_start and statement.statement_period_end:
+                days_in_period = max(1, (statement.statement_period_end - statement.statement_period_start).days + 1)
+        average_daily_spending = total_expenses / days_in_period if days_in_period > 0 else 0.0
         
-        logger.debug(f"Get financial insights successful: {len(insights)} insights ({user_id})")
-        return success_response(data={'insights': insights})
+        # Get biggest expense
+        biggest_expense_query = select(
+            func.max(Transaction.amount).label('max_amount')
+        ).filter_by(
+            user_id=user_id,
+            type='expense'
+        )
+        
+        if statement_id:
+            biggest_expense_query = biggest_expense_query.filter_by(statement_id=statement_id)
+        if start_date:
+            biggest_expense_query = biggest_expense_query.filter(Transaction.date >= start_date)
+        if end_date:
+            biggest_expense_query = biggest_expense_query.filter(Transaction.date <= end_date)
+        
+        biggest_expense = float(db_instance.session.scalar(biggest_expense_query) or 0.0)
+        
+        # Build recommendations array
+        recommendations = []
+        if savings_rate < 20 and savings_rate >= 0:
+            recommendations.append(f"Your spending on {top_spending_category} is {savings_rate:.1f}% higher than average")
+        if savings_rate < 0:
+            recommendations.append("Your expenses exceed your income. Consider reviewing your spending habits.")
+        if top_spending_category:
+            recommendations.append(f"Consider setting a budget for {top_spending_category} category")
+        
+        logger.debug(f"Get financial insights successful ({user_id})")
+        return success_response(data={
+            'savingsRate': round(savings_rate, 1),
+            'topSpendingCategory': top_spending_category,
+            'averageDailySpending': round(average_daily_spending, 2),
+            'biggestExpense': biggest_expense,
+            'recommendations': recommendations
+        })
         
     except ValueError as e:
         return error_response(str(e), 'INVALID_DATE', 400)
@@ -424,7 +476,8 @@ def get_monthly_trends():
             })
         
         logger.debug(f"Get monthly trends successful: {len(monthly_data)} months ({user_id})")
-        return success_response(data={'monthlyData': monthly_data})
+        # Frontend spec expects array directly
+        return success_response(data=monthly_data)
         
     except Exception as e:
         logger.error(f"Get monthly trends error: {str(e)}\nTraceback: {traceback.format_exc()}")

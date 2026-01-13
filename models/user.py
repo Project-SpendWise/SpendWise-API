@@ -52,13 +52,22 @@ class User(db.Model):
     
     def to_dict(self, include_sensitive=False):
         """Convert user to dictionary"""
+        # Build name from first_name and last_name
+        name_parts = []
+        if self.first_name:
+            name_parts.append(self.first_name)
+        if self.last_name:
+            name_parts.append(self.last_name)
+        name = ' '.join(name_parts) if name_parts else None
+        
         data = {
             'id': self.id,
             'email': self.email,
             'username': self.username,
+            'name': name,  # Frontend expects 'name' field
             'first_name': self.first_name,
             'last_name': self.last_name,
-            'created_at': self.created_at.isoformat() + 'Z' if self.created_at else None,
+            'createdAt': self.created_at.isoformat() + 'Z' if self.created_at else None,  # camelCase for frontend
             'is_active': self.is_active
         }
         
