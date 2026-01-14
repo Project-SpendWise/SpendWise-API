@@ -1,5 +1,15 @@
 # SpendWise-API
 
+---
+
+# 📹 Project Video Demonstration
+
+## 🎥 [**WATCH THE COMPLETE PROJECT VIDEO**](https://drive.google.com/file/d/1ZiwSxTRRA50gxMJeQ_mSuYlTxH1J_b5t/view?usp=sharing)
+
+> This video provides a comprehensive overview of the SpendWise API backend, including architecture, code structure, database design, API endpoints, and system functionality.
+
+---
+
 The official API and data management layer for the SpendWise personal finance tracking application. This service handles user authentication, secure data storage for all income and expense records, and provides the necessary analytical endpoints for the mobile app's budgeting and reporting features.
 
 ## 🚀 Quick Start
